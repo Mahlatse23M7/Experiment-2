@@ -1,0 +1,1490 @@
+import React, { useState, useMemo } from "react";
+import {
+  LineChart, Line, AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, ReferenceLine
+} from "recharts";
+import {
+  LayoutGrid, Wallet, LineChart as LineChartIcon, Gauge, Coins, Target,
+  Search, Eye, Receipt, FileText, TrendingUp, TrendingDown, ChevronRight,
+  Plus, Bell, ArrowUpRight, ArrowDownRight, Minus
+} from "lucide-react";
+
+/* ============================================================================
+   TOKENS
+============================================================================ */
+const C = {
+  bg: "#0E1620",
+  panel: "#141F2B",
+  panelAlt: "#182430",
+  hairline: "#26333F",
+  hairlineSoft: "#1D2833",
+  text: "#E9EDF1",
+  textMuted: "#8393A3",
+  textFaint: "#5A6879",
+  gain: "#4FAE7E",
+  gainSoft: "#1B2E27",
+  loss: "#C1573D",
+  lossSoft: "#2E1F1B",
+  gold: "#C9A227",
+  blue: "#5B85B8",
+  violet: "#8C7BC9",
+};
+
+const ASSET_COLORS = {
+  Stocks: "#5B85B8",
+  ETFs: "#4FAE7E",
+  Crypto: "#C9A227",
+  Bonds: "#8C7BC9",
+  Cash: "#8393A3",
+};
+
+const fontImport = `
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+`;
+
+/* ============================================================================
+   PRNG (seeded, so numbers don't jump around on re-render)
+============================================================================ */
+function mulberry32(seed) {
+  return function () {
+    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rand = mulberry32(42);
+
+/* ============================================================================
+   SAMPLE DATA
+============================================================================ */
+const TODAY = new Date("2026-07-17");
+
+const HOLDINGS_RAW = [
+  { ticker: "NPN.JO", name: "Naspers Ltd",         class: "Stocks", sector: "Technology",   region: "South Africa", shares: 18,   buy: 3120.00, price: 3874.50, date: "2024-03-11" },
+  { ticker: "AAPL",   name: "Apple Inc.",           class: "Stocks", sector: "Technology",   region: "United States", shares: 22,  buy: 168.40,  price: 231.80,  date: "2024-01-22" },
+  { ticker: "MSFT",   name: "Microsoft Corp.",      class: "Stocks", sector: "Technology",   region: "United States", shares: 12,  buy: 338.10,  price: 449.30,  date: "2023-11-08" },
+  { ticker: "SBK.JO", name: "Standard Bank Group",  class: "Stocks", sector: "Financials",   region: "South Africa", shares: 65,   buy: 178.20,  price: 212.65,  date: "2024-05-02" },
+  { ticker: "STX40.JO", name: "Satrix Top 40 ETF",  class: "ETFs",   sector: "Diversified",  region: "South Africa", shares: 340,  buy: 68.40,   price: 79.15,   date: "2023-09-14" },
+  { ticker: "VOO",    name: "Vanguard S&P 500 ETF", class: "ETFs",   sector: "Diversified",  region: "United States", shares: 9,   buy: 412.60,  price: 548.90,  date: "2023-06-19" },
+  { ticker: "BTC",    name: "Bitcoin",               class: "Crypto", sector: "Crypto",       region: "Global",       shares: 0.14, buy: 612000,  price: 1145000, date: "2024-02-05" },
+  { ticker: "ETH",    name: "Ethereum",              class: "Crypto", sector: "Crypto",       region: "Global",       shares: 1.8,  buy: 34500,   price: 51200,   date: "2024-04-18" },
+  { ticker: "RSA10Y", name: "RSA Retail Savings Bond", class: "Bonds", sector: "Government",  region: "South Africa", shares: 1,    buy: 120000,  price: 132400,  date: "2022-10-01" },
+  { ticker: "MMF",    name: "Money Market Fund",     class: "Cash",   sector: "Cash",         region: "South Africa", shares: 1,    buy: 85000,   price: 91200,   date: "2023-01-15" },
+];
+
+const HOLDINGS = HOLDINGS_RAW.map(h => {
+  const costBasis = h.shares * h.buy;
+  const value = h.shares * h.price;
+  const pl = value - costBasis;
+  const pctReturn = pl / costBasis;
+  const years = (TODAY - new Date(h.date)) / (365.25 * 24 * 3600 * 1000);
+  const annualized = years > 0.08 ? Math.pow(value / costBasis, 1 / years) - 1 : pctReturn;
+  return { ...h, costBasis, value, pl, pctReturn, years, annualized };
+});
+
+const TOTAL_VALUE = HOLDINGS.reduce((s, h) => s + h.value, 0);
+const TOTAL_COST = HOLDINGS.reduce((s, h) => s + h.costBasis, 0);
+const TOTAL_PL = TOTAL_VALUE - TOTAL_COST;
+const TOTAL_RETURN_PCT = TOTAL_PL / TOTAL_COST;
+
+/* ---- 24 months of synthetic monthly returns for portfolio vs benchmarks ---- */
+const MONTHS = 24;
+const monthLabels = Array.from({ length: MONTHS }, (_, i) => {
+  const d = new Date(2024, 6 + i, 1);
+  return d.toLocaleDateString("en-ZA", { month: "short", year: "2-digit" });
+});
+
+function genReturns(mean, vol, seedOffset) {
+  const r = [];
+  let s = 1000 + seedOffset;
+  const rnd = mulberry32(s);
+  for (let i = 0; i < MONTHS; i++) {
+    const z = (rnd() + rnd() + rnd() - 1.5) / 1.5; // approx normal-ish
+    r.push(mean + vol * z);
+  }
+  return r;
+}
+const portReturns = genReturns(0.021, 0.052, 7);
+const jseReturns = genReturns(0.012, 0.045, 91);
+const spxReturns = genReturns(0.016, 0.041, 233);
+
+function cumulative(returns, startVal) {
+  let v = startVal;
+  return returns.map(r => (v = v * (1 + r)));
+}
+const startPortfolioVal = TOTAL_VALUE / cumulative(portReturns, 1).at(-1);
+const portfolioSeries = cumulative(portReturns, startPortfolioVal);
+const jseSeries = cumulative(jseReturns, 100).map(v => v); // indexed to 100
+const spxSeries = cumulative(spxReturns, 100).map(v => v);
+const jseNorm = jseSeries.map(v => (v / jseSeries[0]) * 100);
+const spxNorm = spxSeries.map(v => (v / spxSeries[0]) * 100);
+const portNorm = portfolioSeries.map(v => (v / portfolioSeries[0]) * 100);
+
+const growthData = monthLabels.map((m, i) => ({
+  month: m,
+  Portfolio: Math.round(portfolioSeries[i]),
+  PortfolioIdx: +portNorm[i].toFixed(1),
+  JSE: +jseNorm[i].toFixed(1),
+  SPX: +spxNorm[i].toFixed(1),
+}));
+
+/* ---- drawdown ---- */
+let peak = -Infinity;
+const drawdownData = monthLabels.map((m, i) => {
+  peak = Math.max(peak, portfolioSeries[i]);
+  const dd = (portfolioSeries[i] / peak - 1) * 100;
+  return { month: m, drawdown: +dd.toFixed(2) };
+});
+
+/* ---- monthly returns bar ---- */
+const monthlyReturnsData = monthLabels.map((m, i) => ({ month: m, ret: +(portReturns[i] * 100).toFixed(2) }));
+
+/* ---- risk metrics ---- */
+function mean(a) { return a.reduce((s, x) => s + x, 0) / a.length; }
+function std(a) { const m = mean(a); return Math.sqrt(mean(a.map(x => (x - m) ** 2))); }
+function covariance(a, b) { const ma = mean(a), mb = mean(b); return mean(a.map((x, i) => (x - ma) * (b[i] - mb))); }
+
+const RISK_FREE_ANNUAL = 0.085; // approx SA T-bill / cash rate
+const rfMonthly = RISK_FREE_ANNUAL / 12;
+
+const monthlyMeanReturn = mean(portReturns);
+const monthlyStd = std(portReturns);
+const annualReturn = Math.pow(1 + monthlyMeanReturn, 12) - 1;
+const annualStd = monthlyStd * Math.sqrt(12);
+const downsideReturns = portReturns.filter(r => r < rfMonthly).map(r => r - rfMonthly);
+const downsideDev = downsideReturns.length ? Math.sqrt(mean(downsideReturns.map(x => x * x))) * Math.sqrt(12) : 0.0001;
+const sharpe = (annualReturn - RISK_FREE_ANNUAL) / (annualStd || 0.0001);
+const sortino = (annualReturn - RISK_FREE_ANNUAL) / (downsideDev || 0.0001);
+const beta = covariance(portReturns, jseReturns) / (std(jseReturns) ** 2);
+const jseAnnualReturn = Math.pow(1 + mean(jseReturns), 12) - 1;
+const alpha = annualReturn - (RISK_FREE_ANNUAL + beta * (jseAnnualReturn - RISK_FREE_ANNUAL));
+const maxDrawdown = Math.min(...drawdownData.map(d => d.drawdown));
+const years = MONTHS / 12;
+const cagr = Math.pow(TOTAL_VALUE / TOTAL_COST, 1 / (TOTAL_COST > 0 ? Math.max(years, 1) : 1)) - 1;
+
+/* ---- allocation ---- */
+const classTotals = {};
+HOLDINGS.forEach(h => { classTotals[h.class] = (classTotals[h.class] || 0) + h.value; });
+const allocationData = Object.entries(classTotals).map(([name, value]) => ({ name, value, pct: value / TOTAL_VALUE }));
+
+const sectorTotals = {};
+HOLDINGS.forEach(h => { sectorTotals[h.sector] = (sectorTotals[h.sector] || 0) + h.value; });
+const sectorData = Object.entries(sectorTotals).map(([name, value]) => ({ name, value, pct: value / TOTAL_VALUE }))
+  .sort((a, b) => b.value - a.value);
+
+const regionTotals = {};
+HOLDINGS.forEach(h => { regionTotals[h.region] = (regionTotals[h.region] || 0) + h.value; });
+const regionData = Object.entries(regionTotals).map(([name, value]) => ({ name, value, pct: value / TOTAL_VALUE }))
+  .sort((a, b) => b.value - a.value);
+
+/* ---- dividends ---- */
+const DIVIDENDS = [
+  { ticker: "NPN.JO", exDate: "2026-06-02", payDate: "2026-06-20", amount: 1240, status: "paid" },
+  { ticker: "SBK.JO", exDate: "2026-05-14", payDate: "2026-06-01", amount: 2860, status: "paid" },
+  { ticker: "STX40.JO", exDate: "2026-06-25", payDate: "2026-07-10", amount: 980, status: "paid" },
+  { ticker: "VOO",    exDate: "2026-06-27", payDate: "2026-07-08", amount: 610, status: "paid" },
+  { ticker: "AAPL",   exDate: "2026-05-09", payDate: "2026-05-16", amount: 340, status: "paid" },
+  { ticker: "MSFT",   exDate: "2026-05-15", payDate: "2026-06-12", amount: 410, status: "paid" },
+  { ticker: "SBK.JO", exDate: "2026-08-13", payDate: "2026-09-01", amount: 2950, status: "upcoming" },
+  { ticker: "NPN.JO", exDate: "2026-08-04", payDate: "2026-08-22", amount: 1310, status: "upcoming" },
+  { ticker: "VOO",    exDate: "2026-09-26", payDate: "2026-10-07", amount: 640, status: "upcoming" },
+];
+const dividendMonthly = [
+  { month: "Feb", amount: 1120 }, { month: "Mar", amount: 1980 }, { month: "Apr", amount: 890 },
+  { month: "May", amount: 3410 }, { month: "Jun", amount: 5080 }, { month: "Jul", amount: 1240 },
+];
+const annualDividendIncome = dividendMonthly.reduce((s, d) => s + d.amount, 0) * 2; // rough annualized
+const dividendYield = annualDividendIncome / TOTAL_VALUE;
+const yieldOnCost = annualDividendIncome / TOTAL_COST;
+
+/* ---- goals ---- */
+const GOALS = [
+  { name: "Retirement", icon: "retirement", target: 5000000, current: 812000, monthly: 8000, startDate: "2023-01-01", expectedReturn: 0.09 },
+  { name: "House Deposit", icon: "house", target: 600000, current: 341000, monthly: 6500, startDate: "2024-06-01", expectedReturn: 0.06 },
+  { name: "Emergency Fund", icon: "emergency", target: 150000, current: 128000, monthly: 2500, startDate: "2024-01-01", expectedReturn: 0.075 },
+  { name: "Education Fund", icon: "education", target: 300000, current: 64000, monthly: 1800, startDate: "2025-02-01", expectedReturn: 0.07 },
+].map(g => {
+  const remaining = Math.max(g.target - g.current, 0);
+  const progress = g.current / g.target;
+  // months to reach target with monthly contribution + growth (simple iterative)
+  let bal = g.current; let months = 0;
+  const r = g.expectedReturn / 12;
+  while (bal < g.target && months < 600) { bal = bal * (1 + r) + g.monthly; months++; }
+  const eta = new Date(TODAY); eta.setMonth(eta.getMonth() + months);
+  return { ...g, remaining, progress, months, eta };
+});
+
+/* ---- watchlist ---- */
+const WATCHLIST = [
+  { ticker: "TSLA", name: "Tesla Inc.", price: 312.40, change: 2.8, high52: 386.90, low52: 198.10, alert: 280, note: "Waiting for pullback below R280 before entry." },
+  { ticker: "AMZN", name: "Amazon.com Inc.", price: 218.65, change: -0.6, high52: 231.20, low52: 151.60, alert: 200, note: "Strong AWS growth; watching Q3 margins." },
+  { ticker: "PRX.JO", name: "Prosus N.V.", price: 542.10, change: 1.4, high52: 601.40, low52: 421.00, alert: 500, note: "Tencent-linked; correlated with NPN holding." },
+  { ticker: "GLD", name: "SPDR Gold Shares", price: 241.90, change: 0.3, high52: 254.10, low52: 198.40, alert: 230, note: "Hedge candidate if inflation data surprises high." },
+];
+
+/* ---- analyzer fundamentals (for watchlist + holdings) ---- */
+const FUNDAMENTALS = {
+  TSLA: { pe: 68.2, peg: 2.9, revGrowth: 0.14, earnGrowth: 0.22, roe: 0.19, de: 0.18, fcf: "R38.4B", rating: "Hold", fairValue: 298 },
+  AMZN: { pe: 41.5, peg: 1.6, revGrowth: 0.12, earnGrowth: 0.28, roe: 0.21, de: 0.55, fcf: "R612B", rating: "Buy", fairValue: 245 },
+  "PRX.JO": { pe: 14.8, peg: 0.9, revGrowth: 0.09, earnGrowth: 0.18, roe: 0.11, de: 0.22, fcf: "R48B", rating: "Buy", fairValue: 610 },
+  GLD: { pe: null, peg: null, revGrowth: null, earnGrowth: null, roe: null, de: null, fcf: "—", rating: "Hold", fairValue: 250 },
+  "NPN.JO": { pe: 22.1, peg: 1.1, revGrowth: 0.11, earnGrowth: 0.24, roe: 0.16, de: 0.31, fcf: "R41B", rating: "Buy", fairValue: 4120 },
+  AAPL: { pe: 31.4, peg: 2.4, revGrowth: 0.06, earnGrowth: 0.09, roe: 1.51, de: 1.87, fcf: "$99B", rating: "Hold", fairValue: 225 },
+  MSFT: { pe: 35.8, peg: 2.1, revGrowth: 0.15, earnGrowth: 0.18, roe: 0.38, de: 0.42, fcf: "$74B", rating: "Buy", fairValue: 470 },
+  "SBK.JO": { pe: 8.9, peg: 0.7, revGrowth: 0.08, earnGrowth: 0.13, roe: 0.18, de: 1.9, fcf: "R19B", rating: "Buy", fairValue: 232 },
+};
+
+/* ---- transactions ---- */
+const TRANSACTIONS = [
+  { date: "2026-07-10", type: "Dividend", ticker: "STX40.JO", amount: 980 },
+  { date: "2026-07-02", type: "Buy", ticker: "AAPL", shares: 2, amount: -463.60 },
+  { date: "2026-06-27", type: "Dividend", ticker: "VOO", amount: 610 },
+  { date: "2026-06-20", type: "Dividend", ticker: "NPN.JO", amount: 1240 },
+  { date: "2026-06-15", type: "Deposit", amount: 8000 },
+  { date: "2026-06-01", type: "Dividend", ticker: "SBK.JO", amount: 2860 },
+  { date: "2026-05-28", type: "Fee", amount: -85 },
+  { date: "2026-05-20", type: "Buy", ticker: "ETH", shares: 0.2, amount: -10240 },
+  { date: "2026-05-15", type: "Deposit", amount: 8000 },
+  { date: "2026-05-02", type: "Sell", ticker: "SBK.JO", shares: 10, amount: 2126.50 },
+  { date: "2026-04-18", type: "Tax", amount: -1420 },
+  { date: "2026-04-15", type: "Deposit", amount: 8000 },
+  { date: "2026-03-22", type: "Buy", ticker: "MSFT", shares: 3, amount: -1347.90 },
+  { date: "2026-03-15", type: "Deposit", amount: 8000 },
+];
+
+/* ============================================================================
+   UTILITIES
+============================================================================ */
+const fmtZAR = (n, digits = 0) =>
+  "R " + Number(n).toLocaleString("en-ZA", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+const fmtPct = (n, digits = 1) => `${n >= 0 ? "+" : ""}${(n * 100).toFixed(digits)}%`;
+const fmtNum = (n, digits = 2) => Number(n).toLocaleString("en-ZA", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+
+function GainText({ value, digits = 1, pct = true, showIcon = true, className = "" }) {
+  const positive = value >= 0;
+  return (
+    <span
+      className={`inline-flex items-center gap-1 ${className}`}
+      style={{ color: positive ? C.gain : C.loss, fontFamily: "'IBM Plex Mono', monospace" }}
+    >
+      {showIcon && (positive ? <ArrowUpRight size={13} /> : <ArrowDownRight size={13} />)}
+      {pct ? fmtPct(value, digits) : fmtZAR(value)}
+    </span>
+  );
+}
+
+function Panel({ children, className = "", style = {} }) {
+  return (
+    <div
+      className={`rounded-sm ${className}`}
+      style={{ background: C.panel, border: `1px solid ${C.hairline}`, ...style }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function SectionLabel({ n, children }) {
+  return (
+    <div className="flex items-center gap-2 mb-3">
+      <span
+        style={{ fontFamily: "'IBM Plex Mono', monospace", color: C.gold, fontSize: 11, letterSpacing: "0.08em" }}
+      >
+        {n}
+      </span>
+      <span
+        className="uppercase"
+        style={{ fontFamily: "'IBM Plex Mono', monospace", color: C.textMuted, fontSize: 11, letterSpacing: "0.12em" }}
+      >
+        {children}
+      </span>
+      <div className="flex-1" style={{ height: 1, background: C.hairlineSoft }} />
+    </div>
+  );
+}
+
+/* Custom tooltip for charts */
+function LedgerTooltip({ active, payload, label, formatter }) {
+  if (!active || !payload || !payload.length) return null;
+  return (
+    <div style={{ background: "#0B121A", border: `1px solid ${C.hairline}`, padding: "8px 12px", fontFamily: "'IBM Plex Mono', monospace", fontSize: 12 }}>
+      <div style={{ color: C.textMuted, marginBottom: 4 }}>{label}</div>
+      {payload.map((p, i) => (
+        <div key={i} style={{ color: p.color || C.text }}>
+          {p.name}: {formatter ? formatter(p.value, p.name) : p.value}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ============================================================================
+   NAV CONFIG
+============================================================================ */
+const TABS = [
+  { id: "dashboard", label: "Overview", num: "01", icon: LayoutGrid },
+  { id: "portfolio", label: "Holdings", num: "02", icon: Wallet },
+  { id: "analytics", label: "Analytics", num: "03", icon: LineChartIcon },
+  { id: "metrics", label: "Risk & Return", num: "04", icon: Gauge },
+  { id: "dividends", label: "Dividends", num: "05", icon: Coins },
+  { id: "goals", label: "Goals", num: "06", icon: Target },
+  { id: "watchlist", label: "Watchlist", num: "07", icon: Eye },
+  { id: "screener", label: "Screener", num: "08", icon: Search },
+  { id: "transactions", label: "Ledger", num: "09", icon: Receipt },
+];
+
+/* ============================================================================
+   MAIN APP
+============================================================================ */
+export default function App() {
+  const [tab, setTab] = useState("dashboard");
+  const [sortKey, setSortKey] = useState("value");
+  const [sortDir, setSortDir] = useState("desc");
+  const [selectedWatch, setSelectedWatch] = useState(WATCHLIST[0].ticker);
+
+  const sortedHoldings = useMemo(() => {
+    const arr = [...HOLDINGS];
+    arr.sort((a, b) => {
+      const va = a[sortKey], vb = b[sortKey];
+      if (typeof va === "string") return sortDir === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
+      return sortDir === "asc" ? va - vb : vb - va;
+    });
+    return arr;
+  }, [sortKey, sortDir]);
+
+  const dailyChange = 0.0084; // synthetic today's move
+  const weeklyChange = 0.021;
+  const monthlyChange = 0.038;
+
+  const topPerformers = [...HOLDINGS].sort((a, b) => b.pctReturn - a.pctReturn).slice(0, 3);
+  const worstPerformers = [...HOLDINGS].sort((a, b) => a.pctReturn - b.pctReturn).slice(0, 3);
+
+  function toggleSort(key) {
+    if (sortKey === key) setSortDir(d => (d === "asc" ? "desc" : "asc"));
+    else { setSortKey(key); setSortDir("desc"); }
+  }
+
+  return (
+    <div style={{ background: C.bg, minHeight: "100vh", color: C.text, fontFamily: "'Inter', sans-serif" }}>
+      <style>{`
+        ${fontImport}
+        * { box-sizing: border-box; }
+        ::selection { background: ${C.gold}33; }
+        .mono { font-family: 'IBM Plex Mono', monospace; }
+        .serif { font-family: 'Fraunces', serif; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { text-align: left; padding: 10px 12px; font-size: 13px; }
+        th { font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: ${C.textMuted}; font-weight: 500; cursor: pointer; user-select: none; border-bottom: 1px solid ${C.hairline}; white-space: nowrap; }
+        tbody tr { border-bottom: 1px solid ${C.hairlineSoft}; }
+        tbody tr:hover { background: ${C.panelAlt}; }
+        .tnum { font-family: 'IBM Plex Mono', monospace; font-variant-numeric: tabular-nums; }
+        .scrollx { overflow-x: auto; }
+        button { font-family: inherit; }
+        input, textarea { font-family: inherit; }
+        @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+      `}</style>
+
+      {/* ============== HEADER / STATEMENT MASTHEAD ============== */}
+      <header style={{ borderBottom: `1px solid ${C.hairline}` }}>
+        <div style={{ maxWidth: 1240, margin: "0 auto", padding: "28px 24px 0" }}>
+          <div className="flex items-start justify-between flex-wrap gap-6">
+            <div>
+              <div className="flex items-center gap-2 mb-1">
+                <div style={{ width: 8, height: 8, background: C.gold }} />
+                <span className="mono" style={{ fontSize: 11, letterSpacing: "0.18em", color: C.textMuted }}>
+                  PERSONAL INVESTMENT STATEMENT
+                </span>
+              </div>
+              <h1 className="serif" style={{ fontSize: 30, fontWeight: 500, letterSpacing: "-0.01em", color: C.text }}>
+                Meridian Ledger
+              </h1>
+            </div>
+            <div className="text-right">
+              <div className="mono" style={{ fontSize: 11, color: C.textFaint }}>AS OF</div>
+              <div className="mono" style={{ fontSize: 13, color: C.textMuted }}>
+                {TODAY.toLocaleDateString("en-ZA", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
+              </div>
+            </div>
+          </div>
+
+          {/* SIGNATURE: big statement number + sparkline */}
+          <div className="flex items-end flex-wrap gap-x-12 gap-y-4 mt-6 pb-6">
+            <div>
+              <div className="mono" style={{ fontSize: 11, color: C.textFaint, letterSpacing: "0.1em" }}>TOTAL PORTFOLIO VALUE</div>
+              <div className="tnum" style={{ fontSize: 46, fontWeight: 600, color: C.text, lineHeight: 1.1 }}>
+                {fmtZAR(TOTAL_VALUE)}
+              </div>
+              <GainText value={dailyChange} className="text-sm mt-1" />
+              <span className="mono" style={{ fontSize: 12, color: C.textFaint, marginLeft: 8 }}>today</span>
+            </div>
+
+            <div style={{ width: 220, height: 56 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={growthData}>
+                  <defs>
+                    <linearGradient id="sparkFill" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={C.gold} stopOpacity={0.35} />
+                      <stop offset="100%" stopColor={C.gold} stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <Area type="monotone" dataKey="Portfolio" stroke={C.gold} strokeWidth={1.5} fill="url(#sparkFill)" dot={false} />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+
+            <div className="flex gap-8 ml-auto flex-wrap">
+              {[
+                ["1D", dailyChange], ["1W", weeklyChange], ["1M", monthlyChange], ["Total", TOTAL_RETURN_PCT],
+              ].map(([label, v]) => (
+                <div key={label}>
+                  <div className="mono" style={{ fontSize: 10.5, color: C.textFaint, letterSpacing: "0.1em" }}>{label}</div>
+                  <GainText value={v} className="text-sm" />
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* NAV */}
+        <div style={{ maxWidth: 1240, margin: "0 auto", padding: "0 24px" }}>
+          <nav className="flex gap-1 overflow-x-auto">
+            {TABS.map(t => {
+              const active = tab === t.id;
+              const Icon = t.icon;
+              return (
+                <button
+                  key={t.id}
+                  onClick={() => setTab(t.id)}
+                  className="flex items-center gap-2 px-3 py-3 whitespace-nowrap"
+                  style={{
+                    borderBottom: active ? `2px solid ${C.gold}` : "2px solid transparent",
+                    color: active ? C.text : C.textMuted,
+                    background: "transparent",
+                    border: "none",
+                    borderBottomWidth: 2,
+                    borderBottomColor: active ? C.gold : "transparent",
+                    borderBottomStyle: "solid",
+                    cursor: "pointer",
+                  }}
+                >
+                  <span className="mono" style={{ fontSize: 10.5, color: active ? C.gold : C.textFaint }}>{t.num}</span>
+                  <Icon size={14} />
+                  <span style={{ fontSize: 13, fontWeight: active ? 600 : 500 }}>{t.label}</span>
+                </button>
+              );
+            })}
+          </nav>
+        </div>
+      </header>
+
+      {/* ============== MAIN ============== */}
+      <main style={{ maxWidth: 1240, margin: "0 auto", padding: "28px 24px 80px" }}>
+        {tab === "dashboard" && (
+          <DashboardTab
+            topPerformers={topPerformers} worstPerformers={worstPerformers}
+          />
+        )}
+        {tab === "portfolio" && (
+          <PortfolioTab sortedHoldings={sortedHoldings} sortKey={sortKey} sortDir={sortDir} toggleSort={toggleSort} />
+        )}
+        {tab === "analytics" && <AnalyticsTab />}
+        {tab === "metrics" && <MetricsTab />}
+        {tab === "dividends" && <DividendsTab />}
+        {tab === "goals" && <GoalsTab />}
+        {tab === "watchlist" && (
+          <WatchlistTab selected={selectedWatch} setSelected={setSelectedWatch} />
+        )}
+        {tab === "screener" && <ScreenerTab />}
+        {tab === "transactions" && <TransactionsTab />}
+      </main>
+
+      <footer style={{ borderTop: `1px solid ${C.hairline}` }}>
+        <div style={{ maxWidth: 1240, margin: "0 auto", padding: "18px 24px" }} className="flex justify-between flex-wrap gap-2">
+          <span className="mono" style={{ fontSize: 11, color: C.textFaint }}>
+            Sample data for demonstration · not connected to a live brokerage feed
+          </span>
+          <span className="mono" style={{ fontSize: 11, color: C.textFaint }}>
+            USD/ZAR 18.24 · EUR/ZAR 19.77
+          </span>
+        </div>
+      </footer>
+    </div>
+  );
+}
+
+/* ============================================================================
+   DASHBOARD TAB
+============================================================================ */
+function DashboardTab({ topPerformers, worstPerformers }) {
+  return (
+    <div className="flex flex-col gap-8">
+      <section>
+        <SectionLabel n="01">Portfolio Growth vs. Benchmarks</SectionLabel>
+        <Panel className="p-5">
+          <div style={{ height: 300 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={growthData} margin={{ top: 4, right: 8, left: -12, bottom: 0 }}>
+                <CartesianGrid stroke={C.hairlineSoft} vertical={false} />
+                <XAxis dataKey="month" tick={{ fill: C.textFaint, fontSize: 11, fontFamily: "IBM Plex Mono" }} axisLine={{ stroke: C.hairline }} tickLine={false} interval={2} />
+                <YAxis tick={{ fill: C.textFaint, fontSize: 11, fontFamily: "IBM Plex Mono" }} axisLine={false} tickLine={false} width={44} />
+                <Tooltip content={<LedgerTooltip formatter={(v) => (typeof v === "number" ? v.toFixed(1) : v)} />} />
+                <Legend wrapperStyle={{ fontSize: 12, fontFamily: "Inter" }} />
+                <Line type="monotone" dataKey="PortfolioIdx" name="Your Portfolio" stroke={C.gold} strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="JSE" name="JSE Top 40" stroke={C.blue} strokeWidth={1.5} dot={false} strokeDasharray="4 3" />
+                <Line type="monotone" dataKey="SPX" name="S&P 500" stroke={C.violet} strokeWidth={1.5} dot={false} strokeDasharray="4 3" />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="mono" style={{ fontSize: 11, color: C.textFaint, marginTop: 8 }}>Indexed to 100 at start of period · 24 months</div>
+        </Panel>
+      </section>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+        <section>
+          <SectionLabel n="02">Asset Allocation</SectionLabel>
+          <Panel className="p-5">
+            <AllocationChart data={allocationData} />
+          </Panel>
+        </section>
+        <section>
+          <SectionLabel n="03">Sector Allocation</SectionLabel>
+          <Panel className="p-5">
+            <BarAllocation data={sectorData} />
+          </Panel>
+        </section>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+        <section>
+          <SectionLabel n="04">Top Performers</SectionLabel>
+          <Panel>
+            {topPerformers.map((h, i) => <PerformerRow key={h.ticker} h={h} rank={i + 1} />)}
+          </Panel>
+        </section>
+        <section>
+          <SectionLabel n="05">Worst Performers</SectionLabel>
+          <Panel>
+            {worstPerformers.map((h, i) => <PerformerRow key={h.ticker} h={h} rank={i + 1} />)}
+          </Panel>
+        </section>
+      </div>
+
+      <section>
+        <SectionLabel n="06">Upcoming Dividends</SectionLabel>
+        <Panel>
+          <div className="scrollx">
+            <table>
+              <thead><tr><th>Ticker</th><th>Ex-Date</th><th>Pay Date</th><th>Amount</th></tr></thead>
+              <tbody>
+                {DIVIDENDS.filter(d => d.status === "upcoming").map((d, i) => (
+                  <tr key={i}>
+                    <td className="tnum" style={{ color: C.gold }}>{d.ticker}</td>
+                    <td className="tnum">{d.exDate}</td>
+                    <td className="tnum">{d.payDate}</td>
+                    <td className="tnum">{fmtZAR(d.amount)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+      </section>
+    </div>
+  );
+}
+
+function PerformerRow({ h, rank }) {
+  return (
+    <div className="flex items-center justify-between px-4 py-3" style={{ borderBottom: `1px solid ${C.hairlineSoft}` }}>
+      <div className="flex items-center gap-3">
+        <span className="mono" style={{ fontSize: 11, color: C.textFaint, width: 14 }}>{rank}</span>
+        <div>
+          <div className="tnum" style={{ fontSize: 13, color: C.text }}>{h.ticker}</div>
+          <div style={{ fontSize: 11.5, color: C.textFaint }}>{h.name}</div>
+        </div>
+      </div>
+      <GainText value={h.pctReturn} />
+    </div>
+  );
+}
+
+function AllocationChart({ data }) {
+  return (
+    <div className="flex items-center gap-6 flex-wrap">
+      <div style={{ width: 180, height: 180 }}>
+        <ResponsiveContainer>
+          <PieChart>
+            <Pie data={data} dataKey="value" nameKey="name" innerRadius={54} outerRadius={82} paddingAngle={2} stroke={C.panel} strokeWidth={2}>
+              {data.map((d, i) => <Cell key={i} fill={ASSET_COLORS[d.name] || C.textFaint} />)}
+            </Pie>
+            <Tooltip content={<LedgerTooltip formatter={(v) => fmtZAR(v)} />} />
+          </PieChart>
+        </ResponsiveContainer>
+      </div>
+      <div className="flex flex-col gap-2 flex-1 min-w-[160px]">
+        {data.sort((a, b) => b.value - a.value).map(d => (
+          <div key={d.name} className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div style={{ width: 8, height: 8, background: ASSET_COLORS[d.name] || C.textFaint }} />
+              <span style={{ fontSize: 13 }}>{d.name}</span>
+            </div>
+            <span className="tnum" style={{ fontSize: 12, color: C.textMuted }}>{(d.pct * 100).toFixed(1)}%</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BarAllocation({ data }) {
+  return (
+    <div className="flex flex-col gap-3">
+      {data.map((d, i) => (
+        <div key={d.name}>
+          <div className="flex justify-between mb-1">
+            <span style={{ fontSize: 13 }}>{d.name}</span>
+            <span className="tnum" style={{ fontSize: 12, color: C.textMuted }}>{fmtZAR(d.value)} · {(d.pct * 100).toFixed(1)}%</span>
+          </div>
+          <div style={{ height: 6, background: C.hairlineSoft }}>
+            <div style={{ width: `${d.pct * 100}%`, height: "100%", background: [C.gold, C.blue, C.violet, C.gain, C.loss][i % 5] }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ============================================================================
+   PORTFOLIO TAB
+============================================================================ */
+function PortfolioTab({ sortedHoldings, sortKey, sortDir, toggleSort }) {
+  const cols = [
+    ["ticker", "Ticker"], ["name", "Name"], ["class", "Class"], ["shares", "Units"],
+    ["buy", "Buy Px"], ["price", "Mkt Px"], ["value", "Value"], ["pl", "P/L"],
+    ["pctReturn", "% Return"], ["annualized", "Annualized"],
+  ];
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <SectionLabel n="02">Holdings ({sortedHoldings.length})</SectionLabel>
+      </div>
+      <Panel>
+        <div className="scrollx">
+          <table>
+            <thead>
+              <tr>
+                {cols.map(([key, label]) => (
+                  <th key={key} onClick={() => toggleSort(key)}>
+                    {label} {sortKey === key ? (sortDir === "asc" ? "↑" : "↓") : ""}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {sortedHoldings.map(h => (
+                <tr key={h.ticker}>
+                  <td className="tnum" style={{ color: C.gold }}>{h.ticker}</td>
+                  <td>{h.name}</td>
+                  <td><Badge>{h.class}</Badge></td>
+                  <td className="tnum">{fmtNum(h.shares, h.shares < 5 ? 3 : 0)}</td>
+                  <td className="tnum">{fmtZAR(h.buy, 2)}</td>
+                  <td className="tnum">{fmtZAR(h.price, 2)}</td>
+                  <td className="tnum">{fmtZAR(h.value)}</td>
+                  <td className="tnum" style={{ color: h.pl >= 0 ? C.gain : C.loss }}>{fmtZAR(h.pl)}</td>
+                  <td><GainText value={h.pctReturn} /></td>
+                  <td><GainText value={h.annualized} /></td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td colSpan={6} className="mono" style={{ color: C.textMuted, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.08em", borderTop: `1px solid ${C.hairline}` }}>Total</td>
+                <td className="tnum" style={{ borderTop: `1px solid ${C.hairline}`, fontWeight: 600 }}>{fmtZAR(TOTAL_VALUE)}</td>
+                <td className="tnum" style={{ borderTop: `1px solid ${C.hairline}`, color: TOTAL_PL >= 0 ? C.gain : C.loss, fontWeight: 600 }}>{fmtZAR(TOTAL_PL)}</td>
+                <td style={{ borderTop: `1px solid ${C.hairline}` }}><GainText value={TOTAL_RETURN_PCT} /></td>
+                <td style={{ borderTop: `1px solid ${C.hairline}` }}><GainText value={cagr} /></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+function Badge({ children }) {
+  return (
+    <span className="mono" style={{
+      fontSize: 10.5, padding: "2px 7px", background: C.panelAlt, border: `1px solid ${C.hairline}`,
+      color: C.textMuted, letterSpacing: "0.04em",
+    }}>
+      {children}
+    </span>
+  );
+}
+
+/* ============================================================================
+   ANALYTICS TAB
+============================================================================ */
+function AnalyticsTab() {
+  return (
+    <div className="flex flex-col gap-8">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+        <section>
+          <SectionLabel n="01">Geographic Exposure</SectionLabel>
+          <Panel className="p-5"><BarAllocation data={regionData} /></Panel>
+        </section>
+        <section>
+          <SectionLabel n="02">Monthly Returns</SectionLabel>
+          <Panel className="p-5">
+            <div style={{ height: 220 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={monthlyReturnsData} margin={{ left: -20 }}>
+                  <CartesianGrid stroke={C.hairlineSoft} vertical={false} />
+                  <XAxis dataKey="month" tick={{ fill: C.textFaint, fontSize: 10, fontFamily: "IBM Plex Mono" }} axisLine={{ stroke: C.hairline }} tickLine={false} interval={2} />
+                  <YAxis tick={{ fill: C.textFaint, fontSize: 11, fontFamily: "IBM Plex Mono" }} axisLine={false} tickLine={false} />
+                  <ReferenceLine y={0} stroke={C.hairline} />
+                  <Tooltip content={<LedgerTooltip formatter={(v) => `${v}%`} />} />
+                  <Bar dataKey="ret" name="Return">
+                    {monthlyReturnsData.map((d, i) => <Cell key={i} fill={d.ret >= 0 ? C.gain : C.loss} />)}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </Panel>
+        </section>
+      </div>
+
+      <section>
+        <SectionLabel n="03">Drawdown</SectionLabel>
+        <Panel className="p-5">
+          <div style={{ height: 220 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={drawdownData} margin={{ left: -16 }}>
+                <defs>
+                  <linearGradient id="ddFill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={C.loss} stopOpacity={0.5} />
+                    <stop offset="100%" stopColor={C.loss} stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid stroke={C.hairlineSoft} vertical={false} />
+                <XAxis dataKey="month" tick={{ fill: C.textFaint, fontSize: 10, fontFamily: "IBM Plex Mono" }} axisLine={{ stroke: C.hairline }} tickLine={false} interval={2} />
+                <YAxis tick={{ fill: C.textFaint, fontSize: 11, fontFamily: "IBM Plex Mono" }} axisLine={false} tickLine={false} />
+                <Tooltip content={<LedgerTooltip formatter={(v) => `${v}%`} />} />
+                <Area type="monotone" dataKey="drawdown" name="Drawdown" stroke={C.loss} fill="url(#ddFill)" strokeWidth={1.5} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="mono" style={{ fontSize: 11, color: C.textFaint, marginTop: 8 }}>
+            Max drawdown over period: <span style={{ color: C.loss }}>{maxDrawdown.toFixed(1)}%</span>
+          </div>
+        </Panel>
+      </section>
+
+      <section>
+        <SectionLabel n="04">Dividend History</SectionLabel>
+        <Panel className="p-5">
+          <div style={{ height: 200 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={dividendMonthly} margin={{ left: -20 }}>
+                <CartesianGrid stroke={C.hairlineSoft} vertical={false} />
+                <XAxis dataKey="month" tick={{ fill: C.textFaint, fontSize: 11, fontFamily: "IBM Plex Mono" }} axisLine={{ stroke: C.hairline }} tickLine={false} />
+                <YAxis tick={{ fill: C.textFaint, fontSize: 11, fontFamily: "IBM Plex Mono" }} axisLine={false} tickLine={false} />
+                <Tooltip content={<LedgerTooltip formatter={(v) => fmtZAR(v)} />} />
+                <Bar dataKey="amount" name="Dividends" fill={C.gold} radius={[2, 2, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </Panel>
+      </section>
+    </div>
+  );
+}
+
+/* ============================================================================
+   METRICS TAB
+============================================================================ */
+function MetricRow({ label, value, hint }) {
+  return (
+    <div className="flex items-center justify-between py-3" style={{ borderBottom: `1px solid ${C.hairlineSoft}` }}>
+      <div>
+        <div style={{ fontSize: 13.5 }}>{label}</div>
+        {hint && <div style={{ fontSize: 11, color: C.textFaint }}>{hint}</div>}
+      </div>
+      <div className="tnum" style={{ fontSize: 15, color: C.text }}>{value}</div>
+    </div>
+  );
+}
+
+function MetricsTab() {
+  const riskScore = Math.min(10, Math.max(1, Math.round((annualStd / 0.28) * 10)));
+  return (
+    <div className="flex flex-col gap-8">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+        <section>
+          <SectionLabel n="01">Return Metrics</SectionLabel>
+          <Panel className="px-5">
+            <MetricRow label="CAGR" value={fmtPct(cagr)} hint="Compound annual growth rate" />
+            <MetricRow label="Total Return" value={fmtPct(TOTAL_RETURN_PCT)} hint="Since inception, all holdings" />
+            <MetricRow label="Annualized Return" value={fmtPct(annualReturn)} hint="From 24-month return series" />
+            <MetricRow label="Dividend Yield" value={fmtPct(dividendYield)} hint="Annual income ÷ current value" />
+            <MetricRow label="Yield on Cost" value={fmtPct(yieldOnCost)} hint="Annual income ÷ cost basis" />
+          </Panel>
+        </section>
+        <section>
+          <SectionLabel n="02">Risk Metrics</SectionLabel>
+          <Panel className="px-5">
+            <MetricRow label="Portfolio Std. Deviation" value={fmtPct(annualStd)} hint="Annualized volatility" />
+            <MetricRow label="Sharpe Ratio" value={fmtNum(sharpe)} hint="Return per unit of total risk" />
+            <MetricRow label="Sortino Ratio" value={fmtNum(sortino)} hint="Return per unit of downside risk" />
+            <MetricRow label="Beta (vs. JSE Top 40)" value={fmtNum(beta)} hint="Sensitivity to market moves" />
+            <MetricRow label="Alpha (vs. JSE Top 40)" value={fmtPct(alpha)} hint="Excess return vs. expected" />
+            <MetricRow label="Max Drawdown" value={`${maxDrawdown.toFixed(1)}%`} hint="Largest peak-to-trough decline" />
+          </Panel>
+        </section>
+      </div>
+
+      <section>
+        <SectionLabel n="03">Risk Score</SectionLabel>
+        <Panel className="p-5">
+          <div className="flex items-center gap-6 flex-wrap">
+            <div className="tnum" style={{ fontSize: 40, color: C.gold, fontWeight: 600 }}>{riskScore}<span style={{ fontSize: 18, color: C.textFaint }}>/10</span></div>
+            <div className="flex-1 min-w-[200px]">
+              <div style={{ height: 8, background: C.hairlineSoft, position: "relative" }}>
+                <div style={{ width: `${riskScore * 10}%`, height: "100%", background: `linear-gradient(90deg, ${C.gain}, ${C.gold}, ${C.loss})` }} />
+              </div>
+              <div className="flex justify-between mt-1">
+                <span className="mono" style={{ fontSize: 10.5, color: C.textFaint }}>Conservative</span>
+                <span className="mono" style={{ fontSize: 10.5, color: C.textFaint }}>Aggressive</span>
+              </div>
+            </div>
+          </div>
+          <p style={{ fontSize: 13, color: C.textMuted, marginTop: 16, lineHeight: 1.6, maxWidth: 640 }}>
+            Driven mainly by a {(classTotals.Crypto / TOTAL_VALUE * 100).toFixed(0)}% crypto allocation and concentrated
+            technology exposure. A move toward bonds and cash would lower volatility at the cost of expected return.
+          </p>
+        </Panel>
+      </section>
+
+      <section>
+        <SectionLabel n="04">AI Portfolio Insight</SectionLabel>
+        <Panel className="p-5">
+          <div className="flex gap-3">
+            <div style={{ width: 6, background: C.gold, flexShrink: 0 }} />
+            <div className="flex flex-col gap-3">
+              <p style={{ fontSize: 13.5, lineHeight: 1.6, color: C.text }}>
+                Today's <GainText value={dailyChange} pct={true} showIcon={false} /> move was led by Naspers and Bitcoin,
+                which together contributed roughly two-thirds of the day's gain. Technology now makes up{" "}
+                {(sectorData.find(s => s.name === "Technology")?.pct * 100 || 0).toFixed(0)}% of the portfolio —
+                above a typical 25–30% guideline for a diversified book.
+              </p>
+              <p style={{ fontSize: 13.5, lineHeight: 1.6, color: C.textMuted }}>
+                Rebalancing idea: trimming ~R60,000 from Naspers and Apple into the bond and ETF sleeves would bring
+                sector concentration back toward target without triggering a large capital gains event this tax year.
+              </p>
+            </div>
+          </div>
+        </Panel>
+      </section>
+    </div>
+  );
+}
+
+/* ============================================================================
+   DIVIDENDS TAB
+============================================================================ */
+function DividendsTab() {
+  return (
+    <div className="flex flex-col gap-8">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <StatCard label="Annual Dividend Income" value={fmtZAR(annualDividendIncome)} />
+        <StatCard label="Dividend Yield" value={fmtPct(dividendYield)} accent />
+        <StatCard label="Yield on Cost" value={fmtPct(yieldOnCost)} accent />
+      </div>
+
+      <section>
+        <SectionLabel n="01">Monthly Income</SectionLabel>
+        <Panel className="p-5">
+          <div style={{ height: 220 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={dividendMonthly} margin={{ left: -20 }}>
+                <CartesianGrid stroke={C.hairlineSoft} vertical={false} />
+                <XAxis dataKey="month" tick={{ fill: C.textFaint, fontSize: 11, fontFamily: "IBM Plex Mono" }} axisLine={{ stroke: C.hairline }} tickLine={false} />
+                <YAxis tick={{ fill: C.textFaint, fontSize: 11, fontFamily: "IBM Plex Mono" }} axisLine={false} tickLine={false} />
+                <Tooltip content={<LedgerTooltip formatter={(v) => fmtZAR(v)} />} />
+                <Bar dataKey="amount" name="Dividends" fill={C.gold} radius={[2, 2, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </Panel>
+      </section>
+
+      <section>
+        <SectionLabel n="02">Dividend History &amp; Schedule</SectionLabel>
+        <Panel>
+          <div className="scrollx">
+            <table>
+              <thead><tr><th>Ticker</th><th>Ex-Date</th><th>Pay Date</th><th>Amount</th><th>Status</th></tr></thead>
+              <tbody>
+                {DIVIDENDS.map((d, i) => (
+                  <tr key={i}>
+                    <td className="tnum" style={{ color: C.gold }}>{d.ticker}</td>
+                    <td className="tnum">{d.exDate}</td>
+                    <td className="tnum">{d.payDate}</td>
+                    <td className="tnum">{fmtZAR(d.amount)}</td>
+                    <td>
+                      <Badge>{d.status === "paid" ? "Paid" : "Upcoming"}</Badge>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+      </section>
+    </div>
+  );
+}
+
+function StatCard({ label, value, accent }) {
+  return (
+    <Panel className="p-5">
+      <div className="mono" style={{ fontSize: 11, color: C.textFaint, letterSpacing: "0.08em" }}>{label.toUpperCase()}</div>
+      <div className="tnum" style={{ fontSize: 26, color: accent ? C.gold : C.text, marginTop: 6 }}>{value}</div>
+    </Panel>
+  );
+}
+
+/* ============================================================================
+   GOALS TAB
+============================================================================ */
+function GoalsTab() {
+  return (
+    <div className="flex flex-col gap-6">
+      <SectionLabel n="01">Investment Goals</SectionLabel>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {GOALS.map(g => (
+          <Panel key={g.name} className="p-5">
+            <div className="flex justify-between items-start mb-4">
+              <div>
+                <div className="serif" style={{ fontSize: 18 }}>{g.name}</div>
+                <div className="mono" style={{ fontSize: 11.5, color: C.textFaint, marginTop: 2 }}>
+                  {fmtZAR(g.monthly)}/mo · target {fmtZAR(g.target)}
+                </div>
+              </div>
+              <div className="tnum text-right" style={{ fontSize: 20, color: C.gold }}>{(g.progress * 100).toFixed(0)}%</div>
+            </div>
+            <div style={{ height: 8, background: C.hairlineSoft }}>
+              <div style={{ width: `${Math.min(g.progress * 100, 100)}%`, height: "100%", background: C.gold }} />
+            </div>
+            <div className="flex justify-between mt-3">
+              <div>
+                <div className="mono" style={{ fontSize: 10.5, color: C.textFaint }}>CURRENT</div>
+                <div className="tnum" style={{ fontSize: 14 }}>{fmtZAR(g.current)}</div>
+              </div>
+              <div>
+                <div className="mono" style={{ fontSize: 10.5, color: C.textFaint }}>REMAINING</div>
+                <div className="tnum" style={{ fontSize: 14 }}>{fmtZAR(g.remaining)}</div>
+              </div>
+              <div className="text-right">
+                <div className="mono" style={{ fontSize: 10.5, color: C.textFaint }}>EST. COMPLETION</div>
+                <div className="tnum" style={{ fontSize: 14, color: C.gain }}>
+                  {g.eta.toLocaleDateString("en-ZA", { month: "short", year: "numeric" })}
+                </div>
+              </div>
+            </div>
+          </Panel>
+        ))}
+      </div>
+
+      <section>
+        <SectionLabel n="02">What-If: Extra Monthly Contribution</SectionLabel>
+        <WhatIfPanel />
+      </section>
+    </div>
+  );
+}
+
+function WhatIfPanel() {
+  const [extra, setExtra] = useState(5000);
+  const retirement = GOALS.find(g => g.name === "Retirement");
+  const r = retirement.expectedReturn / 12;
+  function monthsToTarget(monthlyAdd) {
+    let bal = retirement.current, months = 0;
+    while (bal < retirement.target && months < 600) { bal = bal * (1 + r) + retirement.monthly + monthlyAdd; months++; }
+    return months;
+  }
+  const baseMonths = monthsToTarget(0);
+  const newMonths = monthsToTarget(extra);
+  const monthsSaved = baseMonths - newMonths;
+  return (
+    <Panel className="p-5">
+      <p style={{ fontSize: 13.5, color: C.textMuted, marginBottom: 16 }}>
+        Simulate investing an extra amount per month toward your <strong style={{ color: C.text }}>Retirement</strong> goal.
+      </p>
+      <div className="flex items-center gap-4 flex-wrap mb-6">
+        <input
+          type="range" min={0} max={20000} step={500} value={extra}
+          onChange={e => setExtra(Number(e.target.value))}
+          style={{ flex: 1, minWidth: 200, accentColor: C.gold }}
+        />
+        <div className="tnum" style={{ fontSize: 18, color: C.gold, minWidth: 120 }}>{fmtZAR(extra)}/mo</div>
+      </div>
+      <div className="grid grid-cols-3 gap-4">
+        <div>
+          <div className="mono" style={{ fontSize: 10.5, color: C.textFaint }}>CURRENT PACE</div>
+          <div className="tnum" style={{ fontSize: 16 }}>{(baseMonths / 12).toFixed(1)} yrs</div>
+        </div>
+        <div>
+          <div className="mono" style={{ fontSize: 10.5, color: C.textFaint }}>WITH EXTRA</div>
+          <div className="tnum" style={{ fontSize: 16, color: C.gain }}>{(newMonths / 12).toFixed(1)} yrs</div>
+        </div>
+        <div>
+          <div className="mono" style={{ fontSize: 10.5, color: C.textFaint }}>TIME SAVED</div>
+          <div className="tnum" style={{ fontSize: 16, color: C.gold }}>{(monthsSaved / 12).toFixed(1)} yrs</div>
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+/* ============================================================================
+   WATCHLIST TAB (+ analyzer)
+============================================================================ */
+function WatchlistTab({ selected, setSelected }) {
+  const item = WATCHLIST.find(w => w.ticker === selected);
+  const f = FUNDAMENTALS[selected];
+  return (
+    <div className="flex flex-col gap-8">
+      <section>
+        <SectionLabel n="01">Watchlist</SectionLabel>
+        <Panel>
+          <div className="scrollx">
+            <table>
+              <thead><tr><th>Ticker</th><th>Name</th><th>Price</th><th>Change</th><th>52W High</th><th>52W Low</th><th>Alert</th><th></th></tr></thead>
+              <tbody>
+                {WATCHLIST.map(w => (
+                  <tr key={w.ticker} onClick={() => setSelected(w.ticker)} style={{ cursor: "pointer", background: selected === w.ticker ? C.panelAlt : "transparent" }}>
+                    <td className="tnum" style={{ color: C.gold }}>{w.ticker}</td>
+                    <td>{w.name}</td>
+                    <td className="tnum">{fmtZAR(w.price, 2)}</td>
+                    <td><GainText value={w.change / 100} /></td>
+                    <td className="tnum">{fmtZAR(w.high52, 2)}</td>
+                    <td className="tnum">{fmtZAR(w.low52, 2)}</td>
+                    <td className="flex items-center gap-1 tnum"><Bell size={11} color={C.gold} />{fmtZAR(w.alert, 2)}</td>
+                    <td><ChevronRight size={14} color={C.textFaint} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+      </section>
+
+      {item && (
+        <section>
+          <SectionLabel n="02">Investment Analyzer — {item.ticker}</SectionLabel>
+          <Panel className="p-5">
+            <div className="flex justify-between items-start flex-wrap gap-4 mb-5">
+              <div>
+                <div className="serif" style={{ fontSize: 20 }}>{item.name}</div>
+                <div className="mono" style={{ fontSize: 12, color: C.textFaint }}>{item.ticker}</div>
+              </div>
+              <div className="text-right">
+                <div className="tnum" style={{ fontSize: 24 }}>{fmtZAR(item.price, 2)}</div>
+                <GainText value={item.change / 100} />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
+              <Fundamental label="P/E Ratio" value={f?.pe ?? "—"} />
+              <Fundamental label="PEG Ratio" value={f?.peg ?? "—"} />
+              <Fundamental label="Revenue Growth" value={f?.revGrowth != null ? fmtPct(f.revGrowth) : "—"} />
+              <Fundamental label="Earnings Growth" value={f?.earnGrowth != null ? fmtPct(f.earnGrowth) : "—"} />
+              <Fundamental label="ROE" value={f?.roe != null ? fmtPct(f.roe) : "—"} />
+              <Fundamental label="Debt-to-Equity" value={f?.de ?? "—"} />
+              <Fundamental label="Free Cash Flow" value={f?.fcf ?? "—"} />
+              <Fundamental label="Analyst Rating" value={f?.rating ?? "—"} highlight />
+            </div>
+
+            <div className="flex items-center justify-between p-4" style={{ background: C.panelAlt, border: `1px solid ${C.hairline}` }}>
+              <div>
+                <div className="mono" style={{ fontSize: 10.5, color: C.textFaint }}>FAIR VALUE ESTIMATE</div>
+                <div className="tnum" style={{ fontSize: 20, color: C.gold }}>{fmtZAR(f?.fairValue, 2)}</div>
+              </div>
+              <div className="text-right">
+                <div className="mono" style={{ fontSize: 10.5, color: C.textFaint }}>VS. CURRENT PRICE</div>
+                <GainText value={(f?.fairValue - item.price) / item.price} />
+              </div>
+            </div>
+
+            <div className="mt-5">
+              <div className="mono" style={{ fontSize: 10.5, color: C.textFaint, marginBottom: 6 }}>NOTES</div>
+              <p style={{ fontSize: 13.5, color: C.textMuted, lineHeight: 1.6 }}>{item.note}</p>
+            </div>
+          </Panel>
+        </section>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================================
+   SCREENER — criteria sourced from "Value Investing in Quality Businesses"
+   (Growth, Profitability, Cash Flow, Efficiency, Valuation, Risk &
+   Financial Strength, and Capital Allocation & Dividend Quality tables)
+============================================================================ */
+const SCREENER_METRICS = [
+  // Growth
+  { cat: "Growth", key: "revGrowth", label: "Revenue Growth %", target: "> 15%", cmp: ">", val: 15, unit: "%" },
+  { cat: "Growth", key: "revCagr5y", label: "Revenue CAGR (5Y/10Y)", target: "High & consistent", cmp: ">", val: 10, unit: "%" },
+  { cat: "Growth", key: "epsGrowth", label: "EPS Growth", target: "Positive & accelerating", cmp: ">", val: 0, unit: "%" },
+  { cat: "Growth", key: "epsCagr5y", label: "EPS CAGR (5Y/10Y)", target: "> 15%", cmp: ">", val: 15, unit: "%" },
+  { cat: "Growth", key: "fcfGrowth", label: "FCF Growth", target: "Strong, sustained", cmp: ">", val: 10, unit: "%" },
+  { cat: "Growth", key: "ownersEarningsGrowth", label: "Owner's Earnings Growth", target: "Positive & consistent", cmp: ">", val: 0, unit: "%" },
+  { cat: "Growth", key: "fcfCagr", label: "FCF CAGR", target: "> 10–15%", cmp: ">", val: 10, unit: "%" },
+
+  // Profitability
+  { cat: "Profitability", key: "operatingMargin", label: "Operating Margin", target: "> 15%", cmp: ">", val: 15, unit: "%" },
+  { cat: "Profitability", key: "netMargin", label: "Net Profit Margin", target: "> 15%", cmp: ">", val: 15, unit: "%" },
+  { cat: "Profitability", key: "profitMargin", label: "Profit Margin", target: "> 15%", cmp: ">", val: 15, unit: "%" },
+  { cat: "Profitability", key: "roe", label: "ROE", target: "> 15%", cmp: ">", val: 15, unit: "%" },
+  { cat: "Profitability", key: "roic", label: "ROIC", target: "> 15%", cmp: ">", val: 15, unit: "%" },
+  { cat: "Profitability", key: "roa", label: "ROA", target: "> 10%", cmp: ">", val: 10, unit: "%" },
+  { cat: "Profitability", key: "croic", label: "CROIC", target: "> 15%", cmp: ">", val: 15, unit: "%" },
+  { cat: "Profitability", key: "fcfReturnOnCapital", label: "FCF Return on Capital", target: "> 10%", cmp: ">", val: 10, unit: "%" },
+  { cat: "Profitability", key: "roicWaccSpread", label: "ROIC − WACC Spread", target: "Large & positive", cmp: ">", val: 0, unit: "pp" },
+  { cat: "Profitability", key: "cashRoe", label: "Cash Return on Equity", target: "> 10%", cmp: ">", val: 10, unit: "%" },
+
+  // Cash Flow
+  { cat: "Cash Flow", key: "fcfPerShareGrowth", label: "FCF per Basic Share (growth)", target: "Growing steadily", cmp: ">", val: 0, unit: "%" },
+  { cat: "Cash Flow", key: "fcfConversion", label: "FCF Conversion (FCF / Net Income)", target: "> 1.0", cmp: ">", val: 1.0, unit: "x" },
+  { cat: "Cash Flow", key: "opCfCagr", label: "Operating Cash Flow CAGR", target: "> 10%", cmp: ">", val: 10, unit: "%" },
+  { cat: "Cash Flow", key: "fcfYield", label: "FCF Yield", target: "> 5%", cmp: ">", val: 5, unit: "%" },
+  { cat: "Cash Flow", key: "fcfMargin", label: "FCF Margin", target: "> 10–15%", cmp: ">", val: 10, unit: "%" },
+  { cat: "Cash Flow", key: "fcfPayoutRatio", label: "FCF Payout Ratio", target: "< 70%", cmp: "<", val: 70, unit: "%" },
+  { cat: "Cash Flow", key: "croci", label: "CROCI", target: "> 10–12%", cmp: ">", val: 10, unit: "%" },
+  { cat: "Cash Flow", key: "capexRatio", label: "CapEx / Operating Cash Flow", target: "< 80%", cmp: "<", val: 80, unit: "%" },
+
+  // Efficiency
+  { cat: "Efficiency", key: "receivablesTurnover", label: "Receivables Turnover", target: "Higher = better", cmp: ">", val: 8, unit: "x" },
+  { cat: "Efficiency", key: "inventoryTurnover", label: "Inventory Turnover", target: "Higher = better", cmp: ">", val: 6, unit: "x" },
+  { cat: "Efficiency", key: "dso", label: "DSO (Days Sales Outstanding)", target: "Lower = better", cmp: "<", val: 45, unit: "days" },
+  { cat: "Efficiency", key: "dio", label: "DIO (Days Inventory Outstanding)", target: "Lower = better", cmp: "<", val: 60, unit: "days" },
+  { cat: "Efficiency", key: "operatingCycle", label: "Operating Cycle (DSO + DIO)", target: "Shorter = better", cmp: "<", val: 90, unit: "days" },
+  { cat: "Efficiency", key: "capitalEfficiency", label: "Capital Efficiency (Revenue / Capital)", target: "High", cmp: ">", val: 1.5, unit: "x" },
+  { cat: "Efficiency", key: "reinvestmentRate", label: "Reinvestment Rate", target: "High & productive", cmp: ">", val: 30, unit: "%" },
+
+  // Valuation
+  { cat: "Valuation", key: "priceToOwnersEarnings", label: "Price / Owner's Earnings", target: "Low", cmp: "<", val: 20, unit: "x" },
+  { cat: "Valuation", key: "evFcf", label: "EV / FCF", target: "< 15", cmp: "<", val: 15, unit: "x" },
+  { cat: "Valuation", key: "evEbit", label: "EV / EBIT", target: "< 12", cmp: "<", val: 12, unit: "x" },
+  { cat: "Valuation", key: "pegRatio", label: "PEG Ratio (P/E ÷ EPS Growth)", target: "< 1.0", cmp: "<", val: 1.0, unit: "x" },
+  { cat: "Valuation", key: "priceToTangibleBook", label: "Price-to-Tangible Book", target: "< 2.0", cmp: "<", val: 2.0, unit: "x" },
+
+  // Risk & Financial Strength
+  { cat: "Risk & Strength", key: "debtFcf", label: "Debt / FCF", target: "< 3x", cmp: "<", val: 3, unit: "x" },
+  { cat: "Risk & Strength", key: "debtOcf", label: "Debt / Net Operating Cash Flow", target: "< 3x", cmp: "<", val: 3, unit: "x" },
+  { cat: "Risk & Strength", key: "debtEquity", label: "Debt-to-Equity Ratio", target: "< 1.0", cmp: "<", val: 1.0, unit: "x" },
+  { cat: "Risk & Strength", key: "interestCoverage", label: "Interest Coverage Ratio", target: "> 5x", cmp: ">", val: 5, unit: "x" },
+  { cat: "Risk & Strength", key: "altmanZ", label: "Altman Z-Score", target: "> 3", cmp: ">", val: 3, unit: "" },
+  { cat: "Risk & Strength", key: "piotroskiF", label: "Piotroski F-Score", target: "≥ 7", cmp: ">=", val: 7, unit: "/9" },
+  { cat: "Risk & Strength", key: "interestBurden", label: "Interest Burden (EBIT / EBT)", target: "> 0.8", cmp: ">", val: 0.8, unit: "x" },
+  { cat: "Risk & Strength", key: "cashRatio", label: "Cash Ratio", target: "> 0.5", cmp: ">", val: 0.5, unit: "x" },
+  { cat: "Risk & Strength", key: "netDebtEbitda", label: "Net Debt / EBITDA", target: "< 2x", cmp: "<", val: 2, unit: "x" },
+
+  // Capital Allocation & Dividend Quality
+  { cat: "Capital Allocation", key: "divGrowth", label: "Dividend Growth Rate (5Y/10Y)", target: "Positive & consistent", cmp: ">", val: 0, unit: "%" },
+  { cat: "Capital Allocation", key: "payoutRatio", label: "Dividend Payout Ratio", target: "< 60%", cmp: "<", val: 60, unit: "%" },
+  { cat: "Capital Allocation", key: "fcfPayoutRatioCA", label: "FCF Payout Ratio", target: "< 70%", cmp: "<", val: 70, unit: "%" },
+  { cat: "Capital Allocation", key: "buybackYield", label: "Share Buyback Yield", target: "Consistent & accretive", cmp: ">", val: 0, unit: "%" },
+  { cat: "Capital Allocation", key: "roce", label: "Return on Capital Employed", target: "> 15%", cmp: ">", val: 15, unit: "%" },
+];
+
+const SCREENER_CATEGORIES = [...new Set(SCREENER_METRICS.map(m => m.cat))];
+
+function passesTest(m, v) {
+  if (v === "" || v === null || v === undefined || Number.isNaN(v)) return null;
+  if (m.cmp === ">") return v > m.val;
+  if (m.cmp === "<") return v < m.val;
+  if (m.cmp === ">=") return v >= m.val;
+  return null;
+}
+
+function scoreCandidate(metrics) {
+  let pass = 0, total = 0;
+  SCREENER_METRICS.forEach(m => {
+    const r = passesTest(m, metrics[m.key]);
+    if (r !== null) { total++; if (r) pass++; }
+  });
+  return { pass, total, pct: total ? pass / total : 0 };
+}
+
+function verdict(pct) {
+  if (pct >= 0.85) return { label: "Exceptional Quality", color: C.gain };
+  if (pct >= 0.7) return { label: "High Quality", color: C.gold };
+  if (pct >= 0.5) return { label: "Watch List", color: C.blue };
+  return { label: "Below Threshold", color: C.loss };
+}
+
+/* seed a plausible starting value per metric so the table isn't empty */
+function seedMetrics(offset, flavor) {
+  const rnd = mulberry32(500 + offset);
+  const out = {};
+  SCREENER_METRICS.forEach(m => {
+    const spread = 0.55 + rnd() * 1.1; // sits above/below threshold organically
+    let v = m.val * spread + (m.cmp === ">" && m.val === 0 ? rnd() * 12 - 3 : 0);
+    v = Math.round(v * 10) / 10;
+    out[m.key] = v;
+  });
+  return { ...out, ...flavor };
+}
+
+const DEFAULT_CANDIDATES = [
+  {
+    id: "c1", ticker: "NPN.JO", name: "Naspers Ltd",
+    metrics: seedMetrics(1, { operatingMargin: 24.1, netMargin: 18.6, roic: 16.8, roe: 19.4, fcfYield: 6.8, fcfMargin: 17.2, pegRatio: 1.1, debtEquity: 0.31, evFcf: 13.2, revGrowth: 11.4 }),
+  },
+  {
+    id: "c2", ticker: "AAPL", name: "Apple Inc.",
+    metrics: seedMetrics(2, { operatingMargin: 31.5, netMargin: 26.4, roe: 151.0, roic: 42.3, fcfYield: 4.2, fcfMargin: 26.1, debtEquity: 1.87, pegRatio: 2.4, evFcf: 24.8, revGrowth: 6.1 }),
+  },
+  {
+    id: "c3", ticker: "MSFT", name: "Microsoft Corp.",
+    metrics: seedMetrics(3, { operatingMargin: 44.6, netMargin: 36.1, roe: 38.2, roic: 27.9, fcfYield: 3.1, fcfMargin: 31.4, debtEquity: 0.42, pegRatio: 2.1, evFcf: 28.6, revGrowth: 15.3 }),
+  },
+];
+
+function ScreenerTab() {
+  const [candidates, setCandidates] = useState(DEFAULT_CANDIDATES);
+  const [expanded, setExpanded] = useState(() => Object.fromEntries(SCREENER_CATEGORIES.map(c => [c, true])));
+
+  function updateMetric(id, key, value) {
+    setCandidates(prev => prev.map(c => c.id === id ? { ...c, metrics: { ...c.metrics, [key]: value === "" ? "" : Number(value) } } : c));
+  }
+  function updateTicker(id, field, value) {
+    setCandidates(prev => prev.map(c => c.id === id ? { ...c, [field]: value } : c));
+  }
+  function addCandidate() {
+    const id = "c" + (candidates.length + 1) + "_" + Date.now();
+    const blank = Object.fromEntries(SCREENER_METRICS.map(m => [m.key, ""]));
+    setCandidates(prev => [...prev, { id, ticker: "NEW", name: "New Candidate", metrics: blank }]);
+  }
+  function removeCandidate(id) {
+    setCandidates(prev => prev.filter(c => c.id !== id));
+  }
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <SectionLabel n="01">Quality Investing Screener</SectionLabel>
+        <button
+          onClick={addCandidate}
+          className="mono flex items-center gap-1.5 px-3 py-1.5"
+          style={{ fontSize: 11, letterSpacing: "0.04em", background: "transparent", color: C.gold, border: `1px solid ${C.gold}`, cursor: "pointer" }}
+        >
+          <Plus size={12} /> ADD CANDIDATE
+        </button>
+      </div>
+      <p style={{ fontSize: 13, color: C.textMuted, lineHeight: 1.6, maxWidth: 720 }}>
+        Criteria and thresholds are drawn directly from the quality-investing framework you uploaded — 55 targets
+        across growth, profitability, cash flow, efficiency, valuation, financial strength, and capital allocation.
+        Edit any figure to screen a real candidate; green means the metric clears its target.
+      </p>
+
+      {/* score summary cards */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {candidates.map(c => {
+          const s = scoreCandidate(c.metrics);
+          const v = verdict(s.pct);
+          return (
+            <Panel key={c.id} className="p-4">
+              <div className="flex items-center justify-between mb-2">
+                <div>
+                  <input
+                    value={c.ticker}
+                    onChange={e => updateTicker(c.id, "ticker", e.target.value.toUpperCase())}
+                    className="tnum"
+                    style={{ background: "transparent", border: "none", color: C.gold, fontSize: 16, width: 100, outline: "none" }}
+                  />
+                  <input
+                    value={c.name}
+                    onChange={e => updateTicker(c.id, "name", e.target.value)}
+                    style={{ background: "transparent", border: "none", color: C.textMuted, fontSize: 11.5, width: "100%", outline: "none", display: "block" }}
+                  />
+                </div>
+                <button onClick={() => removeCandidate(c.id)} style={{ background: "transparent", border: "none", color: C.textFaint, cursor: "pointer", fontSize: 16 }}>×</button>
+              </div>
+              <div className="flex items-end justify-between">
+                <div>
+                  <div className="tnum" style={{ fontSize: 26, color: v.color }}>{s.pass}<span style={{ fontSize: 14, color: C.textFaint }}>/{s.total}</span></div>
+                  <div className="mono" style={{ fontSize: 11, color: v.color, letterSpacing: "0.04em" }}>{v.label}</div>
+                </div>
+                <div style={{ width: 64, height: 64, position: "relative" }}>
+                  <ResponsiveContainer>
+                    <PieChart>
+                      <Pie data={[{ v: s.pct }, { v: 1 - s.pct }]} dataKey="v" innerRadius={22} outerRadius={30} startAngle={90} endAngle={-270} stroke="none">
+                        <Cell fill={v.color} />
+                        <Cell fill={C.hairlineSoft} />
+                      </Pie>
+                    </PieChart>
+                  </ResponsiveContainer>
+                  <div className="tnum" style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, color: v.color }}>
+                    {Math.round(s.pct * 100)}%
+                  </div>
+                </div>
+              </div>
+            </Panel>
+          );
+        })}
+      </div>
+
+      {/* full criteria table by category */}
+      <Panel>
+        <div className="scrollx">
+          <table>
+            <thead>
+              <tr>
+                <th style={{ minWidth: 220 }}>Metric</th>
+                <th style={{ minWidth: 130 }}>Target</th>
+                {candidates.map(c => (
+                  <th key={c.id} className="tnum" style={{ color: C.gold, minWidth: 90 }}>{c.ticker}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {SCREENER_CATEGORIES.map(cat => (
+                <React.Fragment key={cat}>
+                  <tr onClick={() => setExpanded(e => ({ ...e, [cat]: !e[cat] }))} style={{ cursor: "pointer", background: C.panelAlt }}>
+                    <td colSpan={2 + candidates.length} className="mono" style={{ color: C.gold, fontSize: 10.5, letterSpacing: "0.1em", textTransform: "uppercase" }}>
+                      {expanded[cat] ? "▾" : "▸"} {cat}
+                    </td>
+                  </tr>
+                  {expanded[cat] && SCREENER_METRICS.filter(m => m.cat === cat).map(m => (
+                    <tr key={m.key}>
+                      <td style={{ fontSize: 12.5 }}>{m.label}</td>
+                      <td className="mono" style={{ fontSize: 11, color: C.textFaint }}>{m.target}</td>
+                      {candidates.map(c => {
+                        const v = c.metrics[m.key];
+                        const r = passesTest(m, v);
+                        return (
+                          <td key={c.id}>
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                type="number"
+                                value={v}
+                                onChange={e => updateMetric(c.id, m.key, e.target.value)}
+                                className="tnum"
+                                style={{
+                                  width: 62, background: C.panelAlt, border: `1px solid ${C.hairline}`,
+                                  color: r === null ? C.textMuted : (r ? C.gain : C.loss),
+                                  fontSize: 12, padding: "3px 5px", outline: "none",
+                                }}
+                              />
+                              <span className="mono" style={{ fontSize: 10, color: C.textFaint }}>{m.unit}</span>
+                            </div>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </React.Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+function Fundamental({ label, value, highlight }) {
+  return (
+    <div>
+      <div className="mono" style={{ fontSize: 10.5, color: C.textFaint, letterSpacing: "0.04em" }}>{label.toUpperCase()}</div>
+      <div className="tnum" style={{ fontSize: 16, color: highlight ? C.gold : C.text, marginTop: 2 }}>{value}</div>
+    </div>
+  );
+}
+
+/* ============================================================================
+   TRANSACTIONS TAB
+============================================================================ */
+const TXN_COLOR = {
+  Buy: C.blue, Sell: C.gold, Dividend: C.gain, Deposit: C.gain, Withdrawal: C.loss, Fee: C.loss, Tax: C.loss,
+};
+
+function TransactionsTab() {
+  const [filter, setFilter] = useState("All");
+  const types = ["All", "Buy", "Sell", "Dividend", "Deposit", "Fee", "Tax"];
+  const filtered = filter === "All" ? TRANSACTIONS : TRANSACTIONS.filter(t => t.type === filter);
+
+  return (
+    <div className="flex flex-col gap-8">
+      <section>
+        <div className="flex items-center justify-between flex-wrap gap-3 mb-3">
+          <SectionLabel n="01">Transaction History</SectionLabel>
+        </div>
+        <div className="flex gap-2 mb-4 flex-wrap">
+          {types.map(t => (
+            <button
+              key={t}
+              onClick={() => setFilter(t)}
+              className="mono px-3 py-1.5"
+              style={{
+                fontSize: 11, letterSpacing: "0.04em",
+                background: filter === t ? C.gold : "transparent",
+                color: filter === t ? "#161616" : C.textMuted,
+                border: `1px solid ${filter === t ? C.gold : C.hairline}`,
+                cursor: "pointer",
+              }}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
+        <Panel>
+          <div className="scrollx">
+            <table>
+              <thead><tr><th>Date</th><th>Type</th><th>Ticker</th><th>Units</th><th>Amount</th></tr></thead>
+              <tbody>
+                {filtered.map((t, i) => (
+                  <tr key={i}>
+                    <td className="tnum">{t.date}</td>
+                    <td>
+                      <span className="mono" style={{ fontSize: 11, color: TXN_COLOR[t.type] || C.text }}>{t.type}</span>
+                    </td>
+                    <td className="tnum" style={{ color: t.ticker ? C.gold : C.textFaint }}>{t.ticker || "—"}</td>
+                    <td className="tnum">{t.shares ?? "—"}</td>
+                    <td className="tnum" style={{ color: t.amount >= 0 ? C.gain : C.loss }}>
+                      {t.amount >= 0 ? "+" : ""}{fmtZAR(t.amount, 2)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+      </section>
+
+      <section>
+        <SectionLabel n="02">Reports</SectionLabel>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+          {[
+            "Monthly Portfolio Report", "Annual Performance Report", "Tax Report",
+            "Capital Gains Report", "Dividend Report", "Allocation Report",
+          ].map(r => (
+            <Panel key={r} className="p-4 flex items-center justify-between" style={{ cursor: "pointer" }}>
+              <div className="flex items-center gap-3">
+                <FileText size={16} color={C.textFaint} />
+                <span style={{ fontSize: 13 }}>{r}</span>
+              </div>
+              <ChevronRight size={14} color={C.textFaint} />
+            </Panel>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
